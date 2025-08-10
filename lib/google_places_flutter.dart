@@ -276,10 +276,16 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
                 separatorBuilder: (context, pos) => widget.seperatedBuilder ?? const SizedBox(),
                 itemBuilder: (BuildContext context, int index) {
                   return InkWell(
+                    // onTapDown viene chiamato prima che il TextFormField perda il focus.
+                    // In questo modo segnaliamo che l'evento è una selezione di item
+                    // evitando che il listener di perdita focus chiuda l'overlay prima dell'onTap.
+                    onTapDown: (_) {
+                      _isItemSelection = true;
+                    },
                     onTap: () async {
                       var selectedData = alPredictions[index];
                       if (index < alPredictions.length) {
-                        _isItemSelection = true; // evita doppia chiamata callback esterno
+                        // Rimane true (già impostato in onTapDown) per evitare la chiusura prematura
                         widget.itemClick?.call(selectedData);
                         if (widget.isLatLngRequired) {
                           await getPlaceDetailsFromPlaceId(selectedData);
