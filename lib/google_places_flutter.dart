@@ -12,31 +12,30 @@ import 'package:rxdart/rxdart.dart';
 import 'DioErrorHandler.dart';
 
 class GooglePlaceAutoCompleteTextField extends StatefulWidget {
-  OverlayEntry? overlayEntry;
+  final InputDecoration inputDecoration;
+  final ItemClick? itemClick;
+  final GetPlaceDetailswWithLatLng? getPlaceDetailWithLatLng;
+  final bool isLatLngRequired;
 
-  InputDecoration inputDecoration;
-  ItemClick? itemClick;
-  GetPlaceDetailswWithLatLng? getPlaceDetailWithLatLng;
-  bool isLatLngRequired = true;
-
-  TextStyle textStyle;
-  String googleAPIKey;
-  int debounceTime = 600;
-  List<String>? countries = [];
-  TextEditingController textEditingController = TextEditingController();
-  ListItemBuilder? itemBuilder;
-  Widget? seperatedBuilder;
-  void clearData;
-  BoxDecoration? boxDecoration;
-  bool isCrossBtnShown;
-  bool showError;
-  double? containerHorizontalPadding;
-  double? containerVerticalPadding;
-  FocusNode? focusNode;
-  PlaceType? placeType;
-  String? language;
-  TextInputAction? textInputAction;
+  final TextStyle textStyle;
+  final String googleAPIKey;
+  final int debounceTime;
+  final List<String>? countries;
+  final TextEditingController textEditingController;
+  final ListItemBuilder? itemBuilder;
+  final Widget? seperatedBuilder;
+  final VoidCallback? clearData;
+  final BoxDecoration? boxDecoration;
+  final bool isCrossBtnShown;
+  final bool showError;
+  final double? containerHorizontalPadding;
+  final double? containerVerticalPadding;
+  final FocusNode? focusNode;
+  final PlaceType? placeType;
+  final String? language;
+  final TextInputAction? textInputAction;
   final VoidCallback? formSubmitCallback;
+  final VoidCallback? onTapOutsideCallback;
 
   final String? Function(String?, BuildContext)? validator;
 
@@ -54,7 +53,7 @@ class GooglePlaceAutoCompleteTextField extends StatefulWidget {
     this.itemClick,
     this.isLatLngRequired = true,
     this.textStyle = const TextStyle(),
-    this.countries,
+    this.countries = const [],
     this.getPlaceDetailWithLatLng,
     this.itemBuilder,
     this.boxDecoration,
@@ -73,7 +72,7 @@ class GooglePlaceAutoCompleteTextField extends StatefulWidget {
     this.formSubmitCallback,
     this.textInputAction,
     this.clearData,
-    this.overlayEntry,
+    this.onTapOutsideCallback,
   });
 
   @override
@@ -81,7 +80,9 @@ class GooglePlaceAutoCompleteTextField extends StatefulWidget {
 }
 
 class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoCompleteTextField> {
-  final subject = new PublishSubject<String>();
+  OverlayEntry? _overlayEntry;
+
+  final subject = PublishSubject<String>();
   List<Prediction> alPredictions = [];
 
   TextEditingController controller = TextEditingController();
@@ -89,9 +90,15 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
   bool isSearched = false;
 
   bool isCrossBtn = true;
-  late var _dio;
+  late Dio _dio;
 
   CancelToken? _cancelToken = CancelToken();
+
+  // Gestione del focus per intercettare click fuori
+  FocusNode? _internalFocusNode; // creato se non viene passato dall'esterno
+  bool _isItemSelection = false; // evita callback su perdita focus dovuta a selezione item
+
+  FocusNode get _effectiveFocusNode => widget.focusNode ?? _internalFocusNode!;
 
   @override
   Widget build(BuildContext context) {
@@ -101,7 +108,8 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
         padding: EdgeInsets.symmetric(horizontal: widget.containerHorizontalPadding ?? 0, vertical: widget.containerVerticalPadding ?? 0),
         alignment: Alignment.centerLeft,
         decoration: widget.boxDecoration ??
-            BoxDecoration(shape: BoxShape.rectangle, border: Border.all(color: Colors.grey, width: 0.6), borderRadius: BorderRadius.all(Radius.circular(10))),
+            BoxDecoration(
+                shape: BoxShape.rectangle, border: Border.all(color: Colors.grey, width: 0.6), borderRadius: const BorderRadius.all(Radius.circular(10))),
         child: Row(
           mainAxisSize: MainAxisSize.max,
           crossAxisAlignment: CrossAxisAlignment.center,
@@ -111,30 +119,29 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
                 decoration: widget.inputDecoration,
                 style: widget.textStyle,
                 controller: widget.textEditingController,
-                focusNode: widget.focusNode ?? FocusNode(),
+                focusNode: _effectiveFocusNode,
                 textInputAction: widget.textInputAction ?? TextInputAction.done,
                 onFieldSubmitted: (value) {
-                  if (widget.formSubmitCallback != null) {
-                    widget.formSubmitCallback!();
-                  }
+                  widget.formSubmitCallback?.call();
                 },
-                validator: (inputString) {
-                  return widget.validator?.call(inputString, context);
+                // Supportato da versioni recenti di Flutter. Se non disponibile, il listener di focus copre il caso.
+                onTapOutside: (event) {
+                  _effectiveFocusNode.unfocus();
+                  _hideOverlay();
+                  widget.onTapOutsideCallback?.call();
                 },
+                validator: (inputString) => widget.validator?.call(inputString, context),
                 onChanged: (string) {
                   subject.add(string);
                   if (widget.isCrossBtnShown) {
-                    isCrossBtn = string.isNotEmpty ? true : false;
+                    isCrossBtn = string.isNotEmpty;
                     setState(() {});
                   }
                 },
               ),
             ),
-            (!widget.isCrossBtnShown)
-                ? SizedBox()
-                : isCrossBtn && _showCrossIconWidget()
-                    ? IconButton(onPressed: clearData, icon: Icon(Icons.close))
-                    : SizedBox()
+            if (widget.isCrossBtnShown)
+              (isCrossBtn && _showCrossIconWidget()) ? IconButton(onPressed: clearData, icon: const Icon(Icons.close)) : const SizedBox(),
           ],
         ),
       ),
@@ -145,11 +152,8 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
     String apiURL = "https://maps.googleapis.com/maps/api/place/autocomplete/json?input=$text&key=${widget.googleAPIKey}&language=${widget.language}";
 
     if (widget.countries != null) {
-      // in
-
       for (int i = 0; i < widget.countries!.length; i++) {
         String country = widget.countries![i];
-
         if (i == 0) {
           apiURL = apiURL + "&components=country:$country";
         } else {
@@ -170,7 +174,6 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
       _cancelToken = CancelToken();
     }
 
-    // print("urlll $apiURL");
     try {
       String proxyURL = "https://cors-anywhere.herokuapp.com/";
       String url = kIsWeb ? proxyURL + apiURL : apiURL;
@@ -185,21 +188,21 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
 
       PlacesAutocompleteResponse subscriptionResponse = PlacesAutocompleteResponse.fromJson(response.data);
 
-      if (text.length == 0) {
+      if (text.isEmpty) {
         alPredictions.clear();
-        widget.overlayEntry!.remove();
+        _overlayEntry?.remove();
         return;
       }
 
       isSearched = false;
       alPredictions.clear();
-      if (subscriptionResponse.predictions!.length > 0 && (widget.textEditingController.text.toString().trim()).isNotEmpty) {
+      if (subscriptionResponse.predictions!.isNotEmpty && widget.textEditingController.text.toString().trim().isNotEmpty) {
         alPredictions.addAll(subscriptionResponse.predictions!);
       }
 
-      widget.overlayEntry = null;
-      widget.overlayEntry = this._createOverlayEntry();
-      Overlay.of(context).insert(widget.overlayEntry!);
+      _overlayEntry = null;
+      _overlayEntry = _createOverlayEntry();
+      Overlay.of(context).insert(_overlayEntry!);
     } catch (e) {
       var errorHandler = ErrorHandler.internal().handleError(e);
       _showSnackBar("${errorHandler.message}");
@@ -211,6 +214,35 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
     super.initState();
     _dio = Dio();
     subject.stream.distinct().debounceTime(Duration(milliseconds: widget.debounceTime)).listen(textChanged);
+    if (widget.focusNode == null) {
+      _internalFocusNode = FocusNode();
+    }
+    _effectiveFocusNode.addListener(_handleFocusChange);
+  }
+
+  void _handleFocusChange() {
+    if (!_effectiveFocusNode.hasFocus) {
+      if (!_isItemSelection) {
+        _hideOverlay();
+        widget.onTapOutsideCallback?.call();
+      }
+      _isItemSelection = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    try {
+      subject.close();
+    } catch (_) {}
+    _effectiveFocusNode.removeListener(_handleFocusChange);
+    if (_internalFocusNode != null) {
+      _internalFocusNode!.dispose();
+    }
+    if (_cancelToken?.isCancelled == false) {
+      _cancelToken?.cancel();
+    }
+    super.dispose();
   }
 
   textChanged(String text) async {
@@ -218,7 +250,7 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
       getLocation(text);
     } else {
       alPredictions.clear();
-      widget.overlayEntry!.remove();
+      _overlayEntry?.remove();
     }
   }
 
@@ -228,67 +260,74 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
       var size = renderBox.size;
       var offset = renderBox.localToGlobal(Offset.zero);
       return OverlayEntry(
-          builder: (context) => Positioned(
-                left: offset.dx,
-                top: size.height + offset.dy,
-                width: size.width,
-                child: CompositedTransformFollower(
-                  showWhenUnlinked: false,
-                  link: this._layerLink,
-                  offset: Offset(0.0, size.height + 5.0),
-                  child: Material(
-                      child: ListView.separated(
-                    padding: EdgeInsets.zero,
-                    shrinkWrap: true,
-                    itemCount: alPredictions.length,
-                    separatorBuilder: (context, pos) => widget.seperatedBuilder ?? SizedBox(),
-                    itemBuilder: (BuildContext context, int index) {
-                      return InkWell(
-                        onTap: () async {
-                          var selectedData = alPredictions[index];
-                          if (index < alPredictions.length) {
-                            widget.itemClick!(selectedData);
-
-                            if (widget.isLatLngRequired) {
-                              await getPlaceDetailsFromPlaceId(selectedData);
-                            }
-                            removeOverlay();
-                          }
-                        },
-                        child: widget.itemBuilder != null
-                            ? widget.itemBuilder!(context, index, alPredictions[index])
-                            : Container(padding: EdgeInsets.all(10), child: Text(alPredictions[index].description!)),
-                      );
+        builder: (context) => Positioned(
+          left: offset.dx,
+          top: size.height + offset.dy,
+          width: size.width,
+          child: CompositedTransformFollower(
+            showWhenUnlinked: false,
+            link: _layerLink,
+            offset: Offset(0.0, size.height + 5.0),
+            child: Material(
+              child: ListView.separated(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: alPredictions.length,
+                separatorBuilder: (context, pos) => widget.seperatedBuilder ?? const SizedBox(),
+                itemBuilder: (BuildContext context, int index) {
+                  return InkWell(
+                    onTap: () async {
+                      var selectedData = alPredictions[index];
+                      if (index < alPredictions.length) {
+                        _isItemSelection = true; // evita doppia chiamata callback esterno
+                        widget.itemClick?.call(selectedData);
+                        if (widget.isLatLngRequired) {
+                          await getPlaceDetailsFromPlaceId(selectedData);
+                        }
+                        removeOverlay();
+                        Future.microtask(() => _isItemSelection = false);
+                      }
                     },
-                  )),
-                ),
-              ));
+                    child: widget.itemBuilder != null
+                        ? widget.itemBuilder!(context, index, alPredictions[index])
+                        : Container(padding: const EdgeInsets.all(10), child: Text(alPredictions[index].description!)),
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
     }
+    return null;
   }
 
   removeOverlay() {
     alPredictions.clear();
-    widget.overlayEntry = this._createOverlayEntry();
+    _overlayEntry = _createOverlayEntry();
+    if (_overlayEntry != null) {
+      Overlay.of(context).insert(_overlayEntry!);
+      _overlayEntry?.markNeedsBuild();
+    }
+  }
 
-    Overlay.of(context).insert(widget.overlayEntry!);
-    widget.overlayEntry!.markNeedsBuild();
+  void _hideOverlay() {
+    try {
+      _overlayEntry?.remove();
+    } catch (_) {}
+    _overlayEntry = null;
+    alPredictions.clear();
+    if (mounted) setState(() {});
   }
 
   Future<void> getPlaceDetailsFromPlaceId(Prediction prediction) async {
-    //String key = GlobalConfiguration().getString('google_maps_key');
-
     var url = "https://maps.googleapis.com/maps/api/place/details/json?placeid=${prediction.placeId}&key=${widget.googleAPIKey}";
     try {
-      Response response = await _dio.get(
-        url,
-      );
-
+      Response response = await _dio.get(url);
       PlaceDetails placeDetails = PlaceDetails.fromJson(response.data);
-
       prediction.lat = placeDetails.result!.geometry!.location!.lat.toString();
       prediction.lng = placeDetails.result!.geometry!.location!.lng.toString();
-
-      widget.getPlaceDetailWithLatLng!(prediction);
+      widget.getPlaceDetailWithLatLng?.call(prediction);
     } catch (e) {
       var errorHandler = ErrorHandler.internal().handleError(e);
       _showSnackBar("${errorHandler.message}");
@@ -300,31 +339,24 @@ class _GooglePlaceAutoCompleteTextFieldState extends State<GooglePlaceAutoComple
     if (_cancelToken?.isCancelled == false) {
       _cancelToken?.cancel();
     }
-
     setState(() {
       alPredictions.clear();
       isCrossBtn = false;
     });
-
-    if (widget.overlayEntry != null) {
+    if (_overlayEntry != null) {
       try {
-        widget.overlayEntry?.remove();
+        _overlayEntry?.remove();
       } catch (e) {}
     }
   }
 
   _showCrossIconWidget() {
-    return (widget.textEditingController.text.isNotEmpty);
+    return widget.textEditingController.text.isNotEmpty;
   }
 
   _showSnackBar(String errorData) {
     if (widget.showError) {
-      final snackBar = SnackBar(
-        content: Text("$errorData"),
-      );
-
-      // Find the ScaffoldMessenger in the widget tree
-      // and use it to show a SnackBar.
+      final snackBar = SnackBar(content: Text(errorData));
       ScaffoldMessenger.of(context).showSnackBar(snackBar);
     }
   }
